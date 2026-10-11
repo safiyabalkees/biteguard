@@ -1,0 +1,25 @@
+# Python
+server/venv/
+venv/
+__pycache__/
+*.pyc
+
+# Private data: never upload faces, captures, voice or logs
+server/authorized/*/
+server/known_others/*/
+server/captures/
+server/voice/
+server/alerts.json
+server/test_images/*.jpg
+server/test_images/*.jpeg
+server/test_images/*.png
+
+# Flutter build output
+flutter_app/build/
+flutter_app/.dart_tool/
+flutter_app/android/local.properties
+flutter_app/android/.gradle/
+flutter_app/.idea/
+flutter_app/.flutter-plugins-dependencies
+flutter_app/*.iml
+flutter_app/android/*.iml

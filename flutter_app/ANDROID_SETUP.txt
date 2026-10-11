@@ -1,0 +1,12 @@
+After running `flutter create .` in this folder (it adds android/, ios/ etc. without
+overwriting lib/main.dart or pubspec.yaml), edit  android/app/src/main/AndroidManifest.xml :
+
+1) Inside <manifest> (above <application>) add:
+     <uses-permission android:name="android.permission.INTERNET"/>
+     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+
+2) On the <application ...> tag add (needed for plain http:// to your laptop):
+     android:usesCleartextTraffic="true"
+
+If the build complains about minSdk, set  minSdkVersion 23  (or flutter.minSdkVersion -> 23)
+in android/app/build.gradle(.kts).

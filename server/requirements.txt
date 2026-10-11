@@ -1,0 +1,6 @@
+flask>=3.0
+opencv-python>=4.8
+numpy
+requests
+# Face recognition (recommended). Needs dlib; see README if install fails.
+face_recognition
