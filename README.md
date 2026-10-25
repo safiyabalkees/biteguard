@@ -1,6 +1,6 @@
 # 🍪 BiteGuard — Smart Snack Box (simulation package)
 
-Sensor → Wi-Fi → Flask → face recognition → decision → phone alert → voice reply → box speaker.
+Sensor → Wi-Fi → Flask → face recognition → decision → phone alert → optional ESP32 voice playback.
 
 ```
 biteguard/
@@ -14,36 +14,54 @@ The box is **locked by default**. Pressing the button in Wokwi = "someone opened
 The server photographs the person and runs face recognition:
 - **Authorized** → green LED, servo unlocks for 5 s, entry logged.
 - **Unauthorized / unknown / no face** → stays locked, red LED, buzzer, alert to the phone.
-You open the alert, record a voice message, and it is played back ("box speaker").
+You can record a voice message in the phone app. The Wokwi ESP32 fetches it independently of
+access attempts and outputs low-rate PCM through its DAC to the simulated piezo buzzer; this is
+only a rough speaker simulation, not high-quality audio.
 
 ## 1. Run the server
-```bash
+```powershell
 cd server
 python -m venv venv
 venv\Scripts\activate          # Windows   (Mac/Linux: source venv/bin/activate)
 pip install -r requirements.txt
+$env:CAMERA_MODE = "upload"     # Use `export CAMERA_MODE=upload` on Mac/Linux
 python app.py
 ```
-Open http://localhost:5000 — you should see the dashboard. `/health` shows whether face recognition is active.
+Open http://localhost:5000 — you should see the dashboard. `/health` reports whether the OpenCV SFace
+recognition engine is active. On first start, the server downloads the SFace and YuNet model files
+into `server/models/` and verifies their SHA-256 hashes. An internet connection is needed for that
+first download; subsequent starts use the local files.
 
-**If `face_recognition` fails to install** (dlib needs CMake/C++ build tools): delete that line from
-requirements.txt and continue. The server then only *detects* faces and treats every face as
-unauthorized — fine for testing the flow, but install it for the real demo
-(Windows tip: `pip install cmake` first, and install "Desktop development with C++" build tools;
-or use Python 3.10/3.11 with Anaconda: `conda install -c conda-forge dlib`).
+### Wokwi presentation flow
+Keep the ESP32 simulation as the device under demonstration. The laptop camera bridge supplies
+frames because Wokwi does not provide a camera. The simulated button triggers the actual Flask
+face check, and the ESP32 simulation drives the servo, LEDs, and buzzer from the response.
+
+If the model download fails, the server still starts, but face checks fail closed: every attempt is
+unauthorized. Check the startup log and try `POST /reload` after network access is available.
 
 ### Enrol faces
 ```
 server/authorized/safiya/1.jpg 2.jpg 3.jpg     <- authorized (use 3-5 clear photos each)
 server/authorized/mother/1.jpg ...
-server/known_others/sister/1.jpg 2.jpg         <- optional: recognised by name, NOT authorized
+server/known_others/sister/1.jpg 2.jpg         <- optional: recognized by name, NOT authorized
 ```
-Restart the server (or `curl -X POST localhost:5000/reload`).
+Use one face per enrollment photo. Restart the server (or `curl -X POST localhost:5000/reload`).
+The recognition threshold defaults to the OpenCV Zoo SFace cosine threshold (`0.363`); set
+`FACE_MATCH_THRESHOLD` to tune it against the project's own photos. The detector confidence can be
+adjusted with `FACE_DETECT_THRESHOLD` (default `0.5`).
 
-### What counts as "the camera"
-Priority for each access event: (1) a photo uploaded in the last 30 s via `simulate_camera.py`,
-(2) your laptop webcam, (3) cycling through `server/test_images/`.
-Force a mode with `CAMERA_MODE=webcam` or `folder`.
+### Laptop camera bridge
+Open http://localhost:5000/camera in one browser tab, press **Start camera**, and allow camera
+access. Keep it open with the Wokwi simulation in another tab. Wait for “Camera live” before
+pressing the simulated lid button. The bridge uploads a new, downscaled JPEG several times per
+second; Wokwi sends `/event`, Flask recognizes the latest frame, then Wokwi updates its servo,
+LEDs, and buzzer from the decision.
+Uploaded frames expire after 5 seconds by default (`CAMERA_UPLOAD_TTL` can change that).
+
+Other server camera modes are `auto` (fresh upload, laptop webcam, then test-image folder),
+`webcam`, `folder`, and `upload`. For Wokwi, use `upload` to avoid silently substituting a
+different image if the browser camera stops sending frames.
 
 ## 2. Test with no Wokwi/app at all
 ```bash
@@ -52,23 +70,27 @@ python simulate_camera.py some_photo.jpg --trigger
 Dashboard should show an Authorized/Unauthorized entry.
 
 ## 3. Wokwi (ESP32 simulation)
-Wokwi's ESP32 runs in the cloud, so it can't see `localhost`. Expose Flask with ngrok:
+Wokwi's ESP32 runs in the cloud, so it can't see `localhost`. Keep Flask and the laptop camera
+bridge running, then expose Flask with the free Cloudflare Quick Tunnel:
 ```bash
-ngrok http 5000          # copy the https://xxxx.ngrok-free.app URL
+cloudflared tunnel --url http://localhost:5000
 ```
-1. Go to https://wokwi.com → New Project → **ESP32** (Arduino).
-2. Replace `sketch.ino` and `diagram.json` with the files in `wokwi/`; add `libraries.txt`
-   contents via the Library Manager (**ESP32Servo**, **ArduinoJson**).
-3. In `sketch.ino` set `SERVER_URL` to your ngrok URL. Press ▶.
-4. Click the blue button = lid opened. Watch the Serial Monitor, LEDs, servo, buzzer.
+Copy the `https://….trycloudflare.com` URL printed by cloudflared. In the existing BiteGuard Wokwi
+project, set `SERVER_URL` in `sketch.ino` to that URL (no trailing slash). Keep the simulation and
+the laptop camera bridge open. Wait for “Camera live”, then click the blue lid button. The ESP32
+posts the attempt through Wi-Fi and the tunnel; Flask runs recognition and returns the decision;
+the simulated servo, LEDs, and buzzer respond. The Quick Tunnel URL changes when cloudflared restarts.
+
+If creating a new Wokwi project, choose **ESP32** (Arduino), paste in `wokwi/sketch.ino` and
+`wokwi/diagram.json`, then add `ESP32Servo` and `ArduinoJson` through the Library Manager.
 (If a wire in the diagram looks unconnected, just re-draw it in the editor using the pin table below.)
 
 | Part | ESP32 pin |
 |---|---|
 | Button (other side → GND) | D4 |
 | Servo signal (V+ → VIN, GND → GND) | D18 |
-| Buzzer + (other side → GND) | D19 |
-| Red LED via 220Ω | D25 |
+| Buzzer + (other side → GND) | D25 (ESP32 DAC output) |
+| Red LED via 220Ω | D19 |
 | Green LED via 220Ω | D26 |
 
 ## 4. Flutter app

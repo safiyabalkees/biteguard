@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:record/record.dart';
@@ -8,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 // Lets requests pass through ngrok's free-tier browser warning page.
 const hdr = {'ngrok-skip-browser-warning': 'true'};
+const _notificationChannel = MethodChannel('biteguard/notifications');
 
 void main() => runApp(const BiteGuardApp());
 
@@ -32,11 +34,12 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // Android emulator reaches your laptop at 10.0.2.2. Change in settings (⚙).
-  String baseUrl = 'http://10.0.2.2:5000';
+  // The active tunnel lets a physical phone reach the laptop-hosted server.
+  String baseUrl = 'https://subsequent-programmers-gather-administrative.trycloudflare.com';
   List<dynamic> alerts = [];
   int lastSeenId = -1;
   bool connected = false;
+  bool polling = false;
   Timer? timer;
 
   @override
@@ -48,6 +51,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _init() async {
     final prefs = await SharedPreferences.getInstance();
     baseUrl = prefs.getString('baseUrl') ?? baseUrl;
+    await _notificationChannel.invokeMethod<void>('requestPermission');
     timer = Timer.periodic(const Duration(seconds: 2), (_) => _poll());
     _poll();
   }
@@ -59,6 +63,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _poll() async {
+    if (polling) return;
+    polling = true;
     try {
       final r = await http
           .get(Uri.parse('$baseUrl/alerts'), headers: hdr)
@@ -68,14 +74,31 @@ class _HomePageState extends State<HomePage> {
       if (lastSeenId >= 0 && maxId > lastSeenId && mounted) {
         final fresh = list.where((a) => (a['id'] as int) > lastSeenId).toList();
         for (final a in fresh) {
+          _showSystemNotification(a);
           if (a['authorized'] != true) _showAlertBanner(a);
         }
       }
       lastSeenId = maxId;
-      if (mounted) setState(() { alerts = list; connected = true; });
+      if (mounted)
+        setState(() {
+          alerts = list;
+          connected = true;
+        });
     } catch (_) {
       if (mounted) setState(() => connected = false);
+    } finally {
+      polling = false;
     }
+  }
+
+  void _showSystemNotification(dynamic alert) {
+    _notificationChannel.invokeMethod<bool>('show', {
+      'id': alert['id'] as int,
+      'title': alert['authorized'] == true
+          ? 'Authorized access'
+          : 'Unauthorized access',
+      'body': 'Person: ${alert['person']}',
+    });
   }
 
   void _showAlertBanner(dynamic a) {
@@ -84,7 +107,7 @@ class _HomePageState extends State<HomePage> {
     m.showMaterialBanner(MaterialBanner(
       backgroundColor: Colors.red.shade900,
       leading: const Icon(Icons.warning_amber_rounded, size: 32),
-      content: Text('🚨 Unauthorized access!\nPerson: ${a['person']}'),
+      content: Text('Unauthorized access\nPerson: ${a['person']}'),
       actions: [
         TextButton(
             onPressed: () {
@@ -92,13 +115,14 @@ class _HomePageState extends State<HomePage> {
               _openAlert(a);
             },
             child: const Text('VIEW')),
-        TextButton(onPressed: m.clearMaterialBanners, child: const Text('DISMISS')),
+        TextButton(
+            onPressed: m.clearMaterialBanners, child: const Text('DISMISS')),
       ],
     ));
   }
 
-  void _openAlert(dynamic a) => Navigator.push(
-      context, MaterialPageRoute(builder: (_) => AlertPage(baseUrl: baseUrl, alert: a)));
+  void _openAlert(dynamic a) => Navigator.push(context,
+      MaterialPageRoute(builder: (_) => AlertPage(baseUrl: baseUrl, alert: a)));
 
   Future<void> _settings() async {
     final c = TextEditingController(text: baseUrl);
@@ -109,11 +133,16 @@ class _HomePageState extends State<HomePage> {
         content: TextField(
             controller: c,
             decoration: const InputDecoration(
-                helperText: 'Emulator: http://10.0.2.2:5000\nngrok: https://xxxx.ngrok-free.app',
+                helperText:
+                    'Emulator: http://10.0.2.2:5000\nCloudflare: https://your-tunnel.trycloudflare.com',
                 helperMaxLines: 3)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Save')),
         ],
       ),
     );
@@ -122,7 +151,10 @@ class _HomePageState extends State<HomePage> {
       if (u.endsWith('/')) u = u.substring(0, u.length - 1);
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('baseUrl', u);
-      setState(() { baseUrl = u; lastSeenId = -1; });
+      setState(() {
+        baseUrl = u;
+        lastSeenId = -1;
+      });
       _poll();
     }
   }
@@ -132,13 +164,17 @@ class _HomePageState extends State<HomePage> {
         appBar: AppBar(
           title: const Text('🍪 BiteGuard'),
           actions: [
-            Icon(Icons.circle, size: 12, color: connected ? Colors.green : Colors.red),
+            Icon(Icons.circle,
+                size: 12, color: connected ? Colors.green : Colors.red),
             IconButton(icon: const Icon(Icons.settings), onPressed: _settings),
           ],
         ),
         body: alerts.isEmpty
             ? Center(
-                child: Text(connected ? 'No access attempts yet.\nYour snacks are safe 🔒' : 'Not connected.\nCheck server URL in ⚙',
+                child: Text(
+                    connected
+                        ? 'No access attempts yet.\nYour snacks are safe.'
+                        : 'Not connected.\nCheck the server URL in Settings.',
                     textAlign: TextAlign.center))
             : ListView.builder(
                 itemCount: alerts.length,
@@ -146,17 +182,25 @@ class _HomePageState extends State<HomePage> {
                   final a = alerts[i];
                   final ok = a['authorized'] == true;
                   return Card(
-                    margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    margin:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     child: ListTile(
                       onTap: () => _openAlert(a),
                       leading: a['image'] == null
                           ? const Icon(Icons.no_photography, size: 40)
                           : ClipRRect(
                               borderRadius: BorderRadius.circular(8),
-                              child: Image.network('$baseUrl/captures/${a['image']}',
-                                  headers: hdr, width: 56, height: 56, fit: BoxFit.cover,
-                                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image))),
-                      title: Text(ok ? '✅ Authorized: ${a['person']}' : '🚨 Unauthorized: ${a['person']}'),
+                              child: Image.network(
+                                  '$baseUrl/captures/${a['image']}',
+                                  headers: hdr,
+                                  width: 56,
+                                  height: 56,
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (_, __, ___) =>
+                                      const Icon(Icons.broken_image))),
+                      title: Text(ok
+                          ? 'Authorized: ${a['person']}'
+                          : 'Unauthorized: ${a['person']}'),
                       subtitle: Text('${a['time']}'),
                       trailing: const Icon(Icons.chevron_right),
                     ),
@@ -189,7 +233,11 @@ class _AlertPageState extends State<AlertPage> {
   Future<void> _toggleRecord() async {
     if (recording) {
       final p = await _rec.stop();
-      setState(() { recording = false; path = p; msg = 'Recorded. Tap send 👇'; });
+      setState(() {
+        recording = false;
+        path = p;
+        msg = 'Recorded. Tap send.';
+      });
       return;
     }
     if (!await _rec.hasPermission()) {
@@ -199,19 +247,28 @@ class _AlertPageState extends State<AlertPage> {
     final dir = await getTemporaryDirectory();
     final p = '${dir.path}/voice_${DateTime.now().millisecondsSinceEpoch}.wav';
     await _rec.start(const RecordConfig(encoder: AudioEncoder.wav), path: p);
-    setState(() { recording = true; msg = 'Recording… tap again to stop'; });
+    setState(() {
+      recording = true;
+      msg = 'Recording… tap again to stop';
+    });
   }
 
   Future<void> _send() async {
     if (path == null) return;
-    setState(() { sending = true; msg = 'Sending…'; });
+    setState(() {
+      sending = true;
+      msg = 'Sending…';
+    });
     try {
-      final req = http.MultipartRequest('POST', Uri.parse('${widget.baseUrl}/voice'))
-        ..headers.addAll(hdr)
-        ..fields['alert_id'] = '${widget.alert['id']}'
-        ..files.add(await http.MultipartFile.fromPath('audio', path!));
+      final req =
+          http.MultipartRequest('POST', Uri.parse('${widget.baseUrl}/voice'))
+            ..headers.addAll(hdr)
+            ..fields['alert_id'] = '${widget.alert['id']}'
+            ..files.add(await http.MultipartFile.fromPath('audio', path!));
       final res = await req.send();
-      setState(() => msg = res.statusCode == 200 ? '🔊 Sent to the box!' : 'Server error ${res.statusCode}');
+      setState(() => msg = res.statusCode == 200
+          ? 'Voice message sent to the box.'
+          : 'Server error ${res.statusCode}');
     } catch (e) {
       setState(() => msg = 'Failed: $e');
     }
@@ -223,23 +280,27 @@ class _AlertPageState extends State<AlertPage> {
     final a = widget.alert;
     final ok = a['authorized'] == true;
     return Scaffold(
-      appBar: AppBar(title: Text(ok ? 'Authorized access' : '🚨 Unauthorized Access')),
+      appBar:
+          AppBar(title: Text(ok ? 'Authorized access' : 'Unauthorized access')),
       body: ListView(padding: const EdgeInsets.all(16), children: [
         if (a['image'] != null)
           ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: Image.network('${widget.baseUrl}/captures/${a['image']}', headers: hdr)),
+              child: Image.network('${widget.baseUrl}/captures/${a['image']}',
+                  headers: hdr)),
         const SizedBox(height: 16),
-        Text('Person: ${a['person']}', style: Theme.of(context).textTheme.titleLarge),
+        Text('Person: ${a['person']}',
+            style: Theme.of(context).textTheme.titleLarge),
         Text('Time: ${a['time']}'),
-        Text('Status: ${ok ? 'Access granted' : '⚠️ Access blocked'}'),
+        Text('Status: ${ok ? 'Access granted' : 'Access blocked'}'),
         const SizedBox(height: 24),
         FilledButton.icon(
           onPressed: _toggleRecord,
           icon: Icon(recording ? Icons.stop : Icons.mic),
           label: Text(recording ? 'Stop recording' : 'Record voice'),
           style: FilledButton.styleFrom(
-              backgroundColor: recording ? Colors.red : null, padding: const EdgeInsets.all(16)),
+              backgroundColor: recording ? Colors.red : null,
+              padding: const EdgeInsets.all(16)),
         ),
         const SizedBox(height: 12),
         FilledButton.tonalIcon(

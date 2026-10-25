@@ -1,0 +1,4 @@
+[info] loaded 6 face samples
+[info] face engine: OpenCV SFace | camera mode: auto
+ * Serving Flask app 'app'
+ * Debug mode: off
