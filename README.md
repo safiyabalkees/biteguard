@@ -1,123 +1,157 @@
-# 🍪 BiteGuard — Smart Snack Box (simulation package)
+# BiteGuard — Smart Snack Box
 
-Sensor → Wi-Fi → Flask → face recognition → decision → phone alert → optional ESP32 voice playback.
+BiteGuard connects a lid sensor to a Flask server, performs face matching, and sends decisions and live camera information to an Android app.
 
 ```
-biteguard/
-├── server/        Flask backend + face recognition + camera simulator
-├── wokwi/         ESP32 firmware + circuit (paste into wokwi.com)
-└── flutter_app/   Phone app (alerts, photo, record & send voice)
+server/       Flask API, camera bridge, face matching, benchmark utility
+wokwi/        ESP32 firmware and circuit for Wokwi
+flutter_app/  Android app source
 ```
 
-## How it behaves
-The box is **locked by default**. Pressing the button in Wokwi = "someone opened/lifted the lid".
-The server photographs the person and runs face recognition:
-- **Authorized** → green LED, servo unlocks for 5 s, entry logged.
-- **Unauthorized / unknown / no face** → stays locked, red LED, buzzer, alert to the phone.
-You can record a voice message in the phone app. The Wokwi ESP32 fetches it independently of
-access attempts and outputs low-rate PCM through its DAC to the simulated piezo buzzer; this is
-only a rough speaker simulation, not high-quality audio.
+## Requirements
 
-## 1. Run the server
+- Python 3.10 or newer (Python 3.13 is the recommended setup here).
+- Flutter stable SDK and Android Studio.
+- Android SDK platform and build tools, Android SDK Command-line Tools, Platform-Tools, NDK side by side, and CMake. Use the latest stable versions offered by Android Studio's SDK Manager.
+- JDK 17 or newer for the Android Gradle build. The checked-in Android Gradle Plugin 9.1.0 uses Gradle 9.3.1 through the Gradle wrapper.
+- Internet access during setup and the first server start. Gradle downloads Android build components, Flutter downloads Dart packages, and the server downloads the face models.
+- Optional: Cloudflare `cloudflared` for remote access or Wokwi, and a webcam for live camera input.
+
+On Windows, after installing Android Studio and the Android SDK, accept the SDK licenses and check the toolchain:
+
+```powershell
+flutter doctor --android-licenses
+flutter doctor
+flutter devices
+```
+
+Connect an Android phone with USB debugging enabled or start an Android emulator. Flutter's Android setup guide has current SDK installation details: <https://docs.flutter.dev/platform-integration/android/setup>.
+
+## Run the server
+
+Windows PowerShell:
+
 ```powershell
 cd server
-python -m venv venv
-venv\Scripts\activate          # Windows   (Mac/Linux: source venv/bin/activate)
-pip install -r requirements.txt
-$env:CAMERA_MODE = "upload"     # Use `export CAMERA_MODE=upload` on Mac/Linux
+py -3 -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 python app.py
 ```
-Open http://localhost:5000 — you should see the dashboard. `/health` reports whether the OpenCV SFace
-recognition engine is active. On first start, the server downloads the SFace and YuNet model files
-into `server/models/` and verifies their SHA-256 hashes. An internet connection is needed for that
-first download; subsequent starts use the local files.
 
-### Wokwi presentation flow
-Keep the ESP32 simulation as the device under demonstration. The laptop camera bridge supplies
-frames because Wokwi does not provide a camera. The simulated button triggers the actual Flask
-face check, and the ESP32 simulation drives the servo, LEDs, and buzzer from the response.
+If PowerShell blocks script activation, run the venv's Python directly instead:
 
-If the model download fails, the server still starts, but face checks fail closed: every attempt is
-unauthorized. Check the startup log and try `POST /reload` after network access is available.
-
-### Enrol faces
+```powershell
+cd server
+py -3 -m venv venv
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+.\venv\Scripts\python.exe app.py
 ```
-server/authorized/safiya/1.jpg 2.jpg 3.jpg     <- authorized (use 3-5 clear photos each)
-server/authorized/mother/1.jpg ...
-server/known_others/sister/1.jpg 2.jpg         <- optional: recognized by name, NOT authorized
-```
-Use one face per enrollment photo. Restart the server (or `curl -X POST localhost:5000/reload`).
-The recognition threshold defaults to the OpenCV Zoo SFace cosine threshold (`0.363`); set
-`FACE_MATCH_THRESHOLD` to tune it against the project's own photos. The detector confidence can be
-adjusted with `FACE_DETECT_THRESHOLD` (default `0.5`).
 
-### Laptop camera bridge
-Open http://localhost:5000/camera in one browser tab, press **Start camera**, and allow camera
-access. Keep it open with the Wokwi simulation in another tab. Wait for “Camera live” before
-pressing the simulated lid button. The bridge uploads a new, downscaled JPEG several times per
-second; Wokwi sends `/event`, Flask recognizes the latest frame, then Wokwi updates its servo,
-LEDs, and buzzer from the decision.
-Uploaded frames expire after 5 seconds by default (`CAMERA_UPLOAD_TTL` can change that).
+Linux or macOS:
 
-Other server camera modes are `auto` (fresh upload, laptop webcam, then test-image folder),
-`webcam`, `folder`, and `upload`. For Wokwi, use `upload` to avoid silently substituting a
-different image if the browser camera stops sending frames.
-
-## 2. Test with no Wokwi/app at all
 ```bash
-python simulate_camera.py some_photo.jpg --trigger
+cd server
+python3 -m venv venv
+source venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python app.py
 ```
-Dashboard should show an Authorized/Unauthorized entry.
 
-## 3. Wokwi (ESP32 simulation)
-Wokwi's ESP32 runs in the cloud, so it can't see `localhost`. Keep Flask and the laptop camera
-bridge running, then expose Flask with the free Cloudflare Quick Tunnel:
-```bash
+The server listens on `http://localhost:5000` and `/health` reports face-engine and camera status. On first start, it downloads the SFace and YuNet ONNX models and verifies their SHA-256 checksums. Model files are cached under `server/models/` and do not need to be committed.
+
+`CAMERA_MODE` controls camera input:
+
+- `upload` (default): use the browser camera bridge at `http://localhost:5000/camera`; press **Start** and leave the page open.
+- `webcam`: use a webcam attached to the server computer.
+- `folder`: cycle images placed in `server/test_images/`.
+- `auto`: use uploads, then fall back to the image folder.
+
+Set a mode before starting the server, for example in PowerShell: `$env:CAMERA_MODE = "webcam"; python app.py`. In Bash: `CAMERA_MODE=webcam python app.py`.
+
+To enroll people, use **People → Add person** in the phone app, or put photos in `server/authorized/<name>/` (allowed) and `server/known_others/<name>/` (known, not allowed). After changing files manually, reload with PowerShell:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:5000/reload
+```
+
+For camera testing without a webcam, run `python simulate_camera.py photo.jpg --stream` from `server/`.
+
+## Run the Android app
+
+```powershell
+cd flutter_app
+flutter pub get
+flutter devices
+flutter run -d <android-device-id>
+```
+
+Replace `<android-device-id>` with the Android device ID shown by `flutter devices`. This avoids selecting the Windows desktop target by default.
+If Flutter reports that the Visual Studio Windows desktop toolchain is missing, that warning does not block Android builds when you select an Android device explicitly.
+
+Set the server address in the app's **Settings**, then choose **Save & test**:
+
+- Android emulator: `http://10.0.2.2:5000` (the app defaults to this address).
+- Physical phone on the same Wi-Fi: `http://<computer-LAN-IP>:5000`. Allow Python through the computer firewall if prompted.
+- Phone connecting remotely: use the current Cloudflare tunnel URL.
+
+Build a single 64-bit ARM release APK:
+
+```powershell
+flutter build apk --release --target-platform android-arm64
+```
+
+The output is `flutter_app/build/app/outputs/flutter-apk/app-release.apk`. To copy it to the project folder for direct installation, run from `flutter_app/`:
+
+```powershell
+Copy-Item build\app\outputs\flutter-apk\app-release.apk ..\BiteGuard-Android-arm64.apk
+```
+
+The current Gradle configuration signs release builds with the debug key for easy sideloading. Create and configure a private release key before publishing on an app store. Alerts are delivered while the app is running; push notifications when it is closed require a push-notification service such as Firebase Cloud Messaging.
+
+## Remote access with Cloudflare Quick Tunnel
+
+Quick Tunnels create a temporary public HTTPS URL for a local server. They do not require a Cloudflare account or a domain. Install `cloudflared` from [Cloudflare's official downloads page](https://developers.cloudflare.com/tunnel/downloads/). On Windows, download and install the 64-bit MSI, then open a new PowerShell window and confirm it is available:
+
+```powershell
+cloudflared --version
+```
+
+If PowerShell says the command is not found, reopen the terminal after installation or run `cloudflared.exe` from its install folder.
+
+Start BiteGuard in one PowerShell window and leave it running. In a second window, start the tunnel:
+
+```powershell
 cloudflared tunnel --url http://localhost:5000
 ```
-Copy the `https://….trycloudflare.com` URL printed by cloudflared. In the existing BiteGuard Wokwi
-project, set `SERVER_URL` in `sketch.ino` to that URL (no trailing slash). Keep the simulation and
-the laptop camera bridge open. Wait for “Camera live”, then click the blue lid button. The ESP32
-posts the attempt through Wi-Fi and the tunnel; Flask runs recognition and returns the decision;
-the simulated servo, LEDs, and buzzer respond. The Quick Tunnel URL changes when cloudflared restarts.
 
-If creating a new Wokwi project, choose **ESP32** (Arduino), paste in `wokwi/sketch.ino` and
-`wokwi/diagram.json`, then add `ESP32Servo` and `ArduinoJson` through the Library Manager.
-(If a wire in the diagram looks unconnected, just re-draw it in the editor using the pin table below.)
+Copy the generated `https://….trycloudflare.com` URL into the phone app's **Settings**. For Wokwi, copy it into `SERVER_URL` in `wokwi/sketch.ino`. The tunnel terminal must stay open while the app or Wokwi uses it. Stop the tunnel with Ctrl+C. Its hostname is temporary and changes when restarted, so update both clients with the new URL.
+
+Quick Tunnels are for development and testing. The URL is public, and this demo server has no login. Anyone who has the URL can reach the server endpoints. Do not expose private face photos or personal data. For stable production hosting, use a named Cloudflare Tunnel with an access policy instead.
+
+## Wokwi ESP32 simulation
+
+Wokwi's ESP32 runs in the cloud, so it needs the public Cloudflare URL described above. Wokwi libraries: `ESP32Servo` and `ArduinoJson`.
 
 | Part | ESP32 pin |
 |---|---|
 | Button (other side → GND) | D4 |
 | Servo signal (V+ → VIN, GND → GND) | D18 |
-| Buzzer + (other side → GND) | D25 (ESP32 DAC output) |
+| Buzzer + (other side → GND) | D25 (DAC) |
 | Red LED via 220Ω | D19 |
 | Green LED via 220Ω | D26 |
 
-## 4. Flutter app
-```bash
-cd flutter_app
-flutter create .           # generates android/ ios/ ... (keeps our lib/ and pubspec.yaml)
-flutter pub get
-```
-Then follow `ANDROID_SETUP.txt` (permissions + cleartext). Run on an emulator or a USB phone:
-```bash
-flutter run
-```
-Tap ⚙ and set the server URL:
-- Android emulator + local server → `http://10.0.2.2:5000`
-- Real phone → your ngrok `https://…` URL (or `http://<laptop-LAN-IP>:5000` on same Wi-Fi)
+The Wokwi sketch reports round-trip time for access attempts. `python server/bench.py [url]` measures server performance against a local or tunnel URL.
 
-The app polls every 2 s; an unauthorized event pops up a red banner → tap **VIEW** → **Record voice** →
-**Send Voice Message**. The laptop plays it (simulated box speaker) and the Wokwi buzzer plays a jingle.
+## Voice messages
 
-## Demo script (2 minutes)
-1. Show locked box + empty app. 2. Upload an authorized face, press button → green LED, servo unlocks.
-3. Upload sister's/unknown face, press button → red LED, alarm, phone alert with photo.
-4. Record "Hey, keep your hands off my snacks!" → sent → heard on laptop, jingle on the ESP32.
+`POST /voice` accepts PCM WAV in the multipart field `audio`, converts it to 8 kHz / 8-bit mono (maximum 8 seconds), and queues it for the ESP32 DAC. The app does not currently include a record button.
 
-## Limits & next steps
-- Voice audio: simulated by the laptop speaker. Real hardware: ESP32 downloads `/voice/file/<name>`
-  and plays it through a MAX98357A I2S amp.
-- Alerts reach the phone by polling; for alerts anywhere use Firebase Cloud Messaging.
-- Face recognition isn't foolproof (photos can fool it); fine for a snack box, not for security.
-- Real camera: ESP32-CAM can POST a JPEG to `/image` just before the box calls `/event`.
+## Important notes
+
+- A Cloudflare Quick Tunnel is public and this demo server has no login or access token. Anyone with the URL can reach its endpoints. Use it only for demos; do not expose private face photos or personal data.
+- Face matching is a convenience demo, not a security system. A photo can fool it.
+- Face enrollment photos, captures, voice files, logs, generated models, and local Android SDK paths are runtime or machine-specific data and should not be committed.

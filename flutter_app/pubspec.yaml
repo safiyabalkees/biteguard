@@ -1,17 +1,15 @@
 name: biteguard
-description: BiteGuard phone app - alerts, captured photo and voice replies.
+description: BiteGuard phone app - live camera, access alerts and face enrollment.
 publish_to: "none"
-version: 1.0.0+1
+version: 2.0.0+2
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
 
+# Networking uses dart:io directly, so the `http` package is no longer needed.
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.2.0
-  record: ^6.1.0
-  path_provider: ^2.1.0
   shared_preferences: ^2.2.0
 
 dev_dependencies:
